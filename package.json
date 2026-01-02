@@ -1,7 +1,7 @@
 {
     "name": "fenyr-ts",
-    "version": "1.0.0",
-    "description": "Multi-agent AI trading system for WEEX Exchange - GPT-5.2 powered",
+    "version": "2.0.0",
+    "description": "Multi-agent AI trading system for WEEX Exchange - 7 Agents, Bull/Bear Debate, Kelly Sizing, OBI/VPIN",
     "main": "dist/index.js",
     "type": "module",
     "scripts": {
@@ -11,6 +11,10 @@
         "single": "tsx src/index.ts --mode single",
         "hft": "tsx src/index.ts --mode hft",
         "team": "tsx src/index.ts --mode team",
+        "v2": "tsx src/v2.ts --mode single",
+        "v2:hft": "tsx src/v2.ts --mode hft --hft-cycles 5 --hft-interval 30",
+        "v2:scan": "tsx src/v2.ts --mode scan",
+        "v2:continuous": "tsx src/v2.ts --mode continuous",
         "lint": "eslint src/**/*.ts",
         "test": "vitest"
     },
