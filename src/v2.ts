@@ -42,6 +42,7 @@ async function main(): Promise<void> {
         .option('--hft-interval <s>', 'Seconds between HFT cycles', '30')
         .option('--model <model>', 'OpenAI model', 'gpt-5.2')
         .option('--max-position <size>', 'Maximum position size in BTC', '0.001')
+        .option('--min-balance <usd>', 'Stop trading if balance drops below this (USD)', '700')
         .parse(process.argv);
 
     const opts = program.opts();
@@ -109,7 +110,7 @@ async function main(): Promise<void> {
             break;
 
         case 'continuous':
-            await runContinuous(coordinator, opts.symbol, 300); // 5 min interval
+            await runContinuous(coordinator, weexClient, opts.symbol, 300, parseFloat(opts.minBalance));
             break;
 
         default:
@@ -199,20 +200,61 @@ async function runScan(coordinator: EnhancedCoordinatorAgent): Promise<void> {
 
 async function runContinuous(
     coordinator: EnhancedCoordinatorAgent,
+    weexClient: ReturnType<typeof createRustSDKBridge>,
     symbol: string,
-    intervalSec: number
+    intervalSec: number,
+    minBalance: number = 700
 ): Promise<void> {
-    console.log(chalk.magenta('\n♾️ CONTINUOUS MODE'));
+    console.log(chalk.magenta('\n♾️ CONTINUOUS MODE (Balance Protected)'));
     console.log(`   Interval: ${intervalSec}s`);
+    console.log(`   🛡️ Stop-Loss: $${minBalance}`);
     console.log('   Press Ctrl+C to stop');
 
     let cycle = 0;
+    let totalTrades = 0;
+    let aiLogs = 0;
+
     while (true) {
         cycle++;
-        console.log(chalk.yellow(`\n🔄 Continuous cycle ${cycle}`));
+        console.log(chalk.yellow(`\n${'═'.repeat(60)}`));
+        console.log(chalk.yellow(`🔄 Continuous cycle ${cycle}`));
+        console.log(chalk.yellow('═'.repeat(60)));
 
-        await coordinator.runFullAnalysis(symbol);
+        // Check balance before each cycle
+        try {
+            const assets = await weexClient.getAssets();
+            const usdt = assets.find((a: any) => a.coinName === 'USDT');
+            const balance = parseFloat(usdt?.equity || usdt?.available || '0');
 
+            console.log(chalk.cyan(`\n💰 Current Balance: $${balance.toFixed(2)}`));
+
+            if (balance < minBalance) {
+                console.log(chalk.red(`\n⛔ BALANCE PROTECTION TRIGGERED!`));
+                console.log(chalk.red(`   Balance $${balance.toFixed(2)} < Min $${minBalance}`));
+                console.log(chalk.red(`   Stopping trading to protect capital.`));
+
+                console.log(chalk.cyan('\n' + '═'.repeat(60)));
+                console.log(chalk.cyan('🏁 SESSION STOPPED - BALANCE LIMIT'));
+                console.log(chalk.cyan('═'.repeat(60)));
+                console.log(`   Total Cycles: ${cycle - 1}`);
+                console.log(`   AI Logs Uploaded: ${aiLogs}`);
+                console.log(`   Final Balance: $${balance.toFixed(2)}`);
+                return;
+            }
+        } catch (error) {
+            console.log(chalk.yellow('   ⚠️ Could not fetch balance, continuing...'));
+        }
+
+        // Run analysis
+        const decision = await coordinator.runFullAnalysis(symbol);
+        aiLogs += 7;
+
+        if (decision.action === 'execute' && decision.execution?.success) {
+            totalTrades++;
+            console.log(chalk.green(`\n💹 Trade #${totalTrades} executed!`));
+        }
+
+        console.log(chalk.gray(`\n💤 Next cycle in ${intervalSec}s...`));
         await new Promise(r => setTimeout(r, intervalSec * 1000));
     }
 }
