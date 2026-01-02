@@ -106,16 +106,59 @@ export abstract class BaseAgent {
     }
 
     protected async callGPT(prompt: string, context: Record<string, unknown>): Promise<string> {
-        const response = await this.openai.chat.completions.create({
-            model: this.model,
-            messages: [
-                { role: 'system', content: this.getSystemPrompt() },
-                { role: 'user', content: `${prompt}\n\nContext:\n${JSON.stringify(context, null, 2)}` },
-            ],
-            temperature: 0.7,
-        });
+        const maxRetries = 3;
+        let lastError: Error | null = null;
 
-        return response.choices[0]?.message?.content || '';
+        for (let attempt = 1; attempt <= maxRetries; attempt++) {
+            try {
+                const response = await this.openai.chat.completions.create({
+                    model: this.model,
+                    messages: [
+                        { role: 'system', content: this.getSystemPrompt() },
+                        { role: 'user', content: `${prompt}\n\nContext:\n${JSON.stringify(context, null, 2)}` },
+                    ],
+                    temperature: 0.7,
+                });
+
+                return response.choices[0]?.message?.content || '';
+            } catch (error: any) {
+                lastError = error;
+                const isRateLimit = error?.status === 429;
+                const isQuotaExceeded = error?.code === 'insufficient_quota';
+                const isBillingError = error?.message?.includes('billing') || error?.message?.includes('quota');
+
+                console.log(`   ⚠️ LLM API error (attempt ${attempt}/${maxRetries}): ${error?.message || 'Unknown error'}`);
+
+                if (isQuotaExceeded || isBillingError) {
+                    console.log(`   ❌ OpenAI quota/billing issue - returning safe default`);
+                    return JSON.stringify({
+                        signal: 'neutral',
+                        confidence: 0,
+                        recommendation: 'LLM API unavailable - defaulting to HOLD for safety',
+                        error: error?.message
+                    });
+                }
+
+                if (isRateLimit && attempt < maxRetries) {
+                    const waitTime = Math.pow(2, attempt) * 1000;
+                    console.log(`   ⏳ Rate limited, waiting ${waitTime / 1000}s...`);
+                    await new Promise(r => setTimeout(r, waitTime));
+                    continue;
+                }
+
+                if (attempt < maxRetries) {
+                    await new Promise(r => setTimeout(r, 1000));
+                }
+            }
+        }
+
+        console.log(`   ❌ LLM API failed after ${maxRetries} attempts - returning safe default`);
+        return JSON.stringify({
+            signal: 'neutral',
+            confidence: 0,
+            recommendation: 'LLM API error - defaulting to HOLD for safety',
+            error: lastError?.message
+        });
     }
 
     protected calculateRSI(prices: number[], period: number = 14): number {
