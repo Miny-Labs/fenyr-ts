@@ -4,7 +4,7 @@
  */
 
 import OpenAI from 'openai';
-import { WeexClient } from '../sdk/client.js';
+import { RustSDKBridge } from '../sdk/rust-bridge.js';
 import { BaseAgent, AgentDecision, Signal, Action, AgentMessage } from './base.js';
 import { MarketAnalystAgent } from './market-analyst.js';
 import { SentimentAgent } from './sentiment.js';
@@ -31,7 +31,7 @@ export class CoordinatorAgent extends BaseAgent {
 
     constructor(
         openai: OpenAI,
-        weex: WeexClient,
+        weex: RustSDKBridge,
         model: string = 'gpt-5.2',
         maxPositionSize: number = 0.0002
     ) {

@@ -4,11 +4,11 @@
  */
 
 import OpenAI from 'openai';
-import { WeexClient } from '../sdk/client.js';
+import { RustSDKBridge } from '../sdk/rust-bridge.js';
 import { BaseAgent, AgentDecision, Signal } from './base.js';
 
 export class MarketAnalystAgent extends BaseAgent {
-    constructor(openai: OpenAI, weex: WeexClient, model: string = 'gpt-5.2') {
+    constructor(openai: OpenAI, weex: RustSDKBridge, model: string = 'gpt-5.2') {
         super('MarketAnalyst', 'Technical Analysis', openai, weex, model);
     }
 

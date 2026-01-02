@@ -1,10 +1,10 @@
 /**
  * Base Agent Class
- * Foundation for all specialized agents
+ * Foundation for all specialized agents - Uses Rust SDK via Bridge
  */
 
 import OpenAI from 'openai';
-import { WeexClient, AILogInput } from '../sdk/client.js';
+import { RustSDKBridge } from '../sdk/rust-bridge.js';
 import { TRADING_TOOLS, ACTION_TO_SIDE } from '../tools/trading-tools.js';
 
 export type Signal = 'buy' | 'sell' | 'hold' | 'neutral' | 'bullish' | 'bearish' | 'approve' | 'reject' | 'reduce';
@@ -40,7 +40,7 @@ export abstract class BaseAgent {
     protected name: string;
     protected stage: string;
     protected openai: OpenAI;
-    protected weex: WeexClient;
+    protected weex: RustSDKBridge;
     protected model: string;
     protected messageQueue: AgentMessage[] = [];
 
@@ -48,7 +48,7 @@ export abstract class BaseAgent {
         name: string,
         stage: string,
         openai: OpenAI,
-        weex: WeexClient,
+        weex: RustSDKBridge,
         model: string = 'gpt-5.2'
     ) {
         this.name = name;
@@ -83,7 +83,7 @@ export abstract class BaseAgent {
 
     protected async uploadAILog(decision: AgentDecision, orderId?: number): Promise<boolean> {
         try {
-            const log: AILogInput = {
+            const log = {
                 orderId,
                 stage: decision.stage,
                 model: this.model,
@@ -166,7 +166,7 @@ export abstract class BaseAgent {
     }
 
     protected async getTechnicalIndicators(symbol: string): Promise<TechnicalIndicators> {
-        const candles = await this.weex.getCandles(symbol, '1H', 50);
+        const candles = await this.weex.getCandles(symbol);
 
         // Handle different response formats
         let closes: number[] = [];
@@ -238,7 +238,7 @@ export abstract class BaseAgent {
 
         try {
             const ticker = await this.weex.getTicker(symbol);
-            const result = await this.weex.placeOrder(symbol, size, side, 1);
+            const result = await this.weex.placeOrder(symbol, size, side);
 
             return {
                 executed: true,

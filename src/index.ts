@@ -1,14 +1,14 @@
 #!/usr/bin/env node
 /**
  * Fenyr TypeScript Multi-Agent Trading System
- * Main entry point
+ * Main entry point - Uses Rust SDK via Bridge
  */
 
 import 'dotenv/config';
 import { Command } from 'commander';
 import OpenAI from 'openai';
 import chalk from 'chalk';
-import { createWeexClient } from './sdk/client.js';
+import { createRustSDKBridge } from './sdk/rust-bridge.js';
 import { CoordinatorAgent, TeamDecision } from './agents/coordinator.js';
 
 function printBanner(): void {
@@ -151,7 +151,7 @@ async function main(): Promise<void> {
 
     // Initialize clients
     console.log('\n🔗 Connecting to WEEX Exchange...');
-    const weexClient = createWeexClient();
+    const weexClient = createRustSDKBridge();
     const ticker = await weexClient.getTicker(opts.symbol);
     console.log(chalk.green(`✅ Connected! ${opts.symbol} = $${ticker.last}`));
 

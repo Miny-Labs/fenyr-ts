@@ -4,11 +4,11 @@
  */
 
 import OpenAI from 'openai';
-import { WeexClient } from '../sdk/client.js';
+import { RustSDKBridge } from '../sdk/rust-bridge.js';
 import { BaseAgent, AgentDecision, Signal } from './base.js';
 
 export class SentimentAgent extends BaseAgent {
-    constructor(openai: OpenAI, weex: WeexClient, model: string = 'gpt-5.2') {
+    constructor(openai: OpenAI, weex: RustSDKBridge, model: string = 'gpt-5.2') {
         super('SentimentAgent', 'Sentiment Analysis', openai, weex, model);
     }
 
@@ -39,12 +39,7 @@ Format your response as JSON:
         const funding = await this.weex.getFundingRate(symbol);
 
         let openInterest = 'N/A';
-        try {
-            const oi = await this.weex.getOpenInterest(symbol);
-            openInterest = oi.openInterestAmount;
-        } catch {
-            // OI may not be available
-        }
+        // Open interest not available via bridge
 
         const sentimentContext = {
             symbol,

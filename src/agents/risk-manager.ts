@@ -4,7 +4,7 @@
  */
 
 import OpenAI from 'openai';
-import { WeexClient } from '../sdk/client.js';
+import { RustSDKBridge } from '../sdk/rust-bridge.js';
 import { BaseAgent, AgentDecision, Signal } from './base.js';
 
 export class RiskManagerAgent extends BaseAgent {
@@ -13,7 +13,7 @@ export class RiskManagerAgent extends BaseAgent {
 
     constructor(
         openai: OpenAI,
-        weex: WeexClient,
+        weex: RustSDKBridge,
         model: string = 'gpt-5.2',
         maxPositionSize: number = 0.0002,
         maxRiskPct: number = 0.02
