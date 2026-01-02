@@ -19,8 +19,8 @@ export interface RustSDKConfig {
  * Execute Rust SDK command and return JSON result
  */
 async function execRustSDK(command: string, args: Record<string, string> = {}): Promise<unknown> {
-    // For now, we'll use the Python wrapper that already works
-    // In production, this would call the compiled Rust binary
+    // Base64 encode args to avoid JSON escaping issues
+    const argsB64 = Buffer.from(JSON.stringify(args)).toString('base64');
 
     const pythonScript = `
 import time, hmac, hashlib, base64, requests, json, sys
@@ -43,7 +43,7 @@ def post(path, body):
     return requests.post(BASE + path, headers=auth_headers('POST', path, body_str), data=body_str).json()
 
 command = '${command}'
-args = json.loads('${JSON.stringify(args)}')
+args = json.loads(base64.b64decode('${argsB64}').decode('utf-8'))
 
 if command == 'ticker':
     result = get('/capi/v2/market/ticker', '?symbol=' + args.get('symbol', 'cmt_btcusdt'))
@@ -69,14 +69,19 @@ elif command == 'place_order':
         'client_oid': str(int(time.time() * 1000))
     })
 elif command == 'upload_ai_log':
-    result = post('/capi/v2/order/uploadAiLog', {
-        'orderId': args.get('orderId'),
+    input_data = json.loads(args.get('input', '{}')) if isinstance(args.get('input'), str) else args.get('input', {})
+    output_data = json.loads(args.get('output', '{}')) if isinstance(args.get('output'), str) else args.get('output', {})
+    order_id = int(args.get('orderId')) if args.get('orderId') else None
+    body = {
         'stage': args.get('stage'),
         'model': args.get('model'),
-        'input': json.loads(args.get('input', '{}')),
-        'output': json.loads(args.get('output', '{}')),
-        'explanation': args.get('explanation', '')[:1000]
-    })
+        'input': input_data,
+        'output': output_data,
+        'explanation': str(args.get('explanation', ''))[:1000]
+    }
+    if order_id:
+        body['orderId'] = order_id
+    result = post('/capi/v2/order/uploadAiLog', body)
 else:
     result = {'error': 'Unknown command'}
 
