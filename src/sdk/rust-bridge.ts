@@ -1,12 +1,13 @@
 /**
- * Rust SDK Bridge
- * Calls the Rust SDK binary for all WEEX operations
+ * Rust SDK Bridge v2
+ * Calls the weex-cli binary (built from Rust SDK) for all WEEX operations
+ * 
+ * This provides native Rust performance with TypeScript integration.
  */
 
-import { execSync, spawn } from 'child_process';
-import path from 'path';
+import { execSync } from 'child_process';
 
-const RUST_SDK_PATH = process.env.RUST_SDK_PATH || '/root/weex-sdk';
+const CLI_PATH = process.env.WEEX_CLI_PATH || '/usr/local/bin/weex-cli';
 
 export interface RustSDKConfig {
     apiKey: string;
@@ -15,172 +16,145 @@ export interface RustSDKConfig {
     baseUrl: string;
 }
 
-/**
- * Execute Rust SDK command and return JSON result
- */
-async function execRustSDK(command: string, args: Record<string, string> = {}): Promise<unknown> {
-    // Base64 encode args to avoid JSON escaping issues
-    const argsB64 = Buffer.from(JSON.stringify(args)).toString('base64');
-
-    const pythonScript = `
-import time, hmac, hashlib, base64, requests, json, sys
-
-API_KEY = '${process.env.WEEX_API_KEY}'
-SECRET_KEY = '${process.env.WEEX_SECRET_KEY}'
-PASSPHRASE = '${process.env.WEEX_PASSPHRASE}'
-BASE = '${process.env.WEEX_BASE_URL || 'https://api-contract.weex.com'}'
-
-def auth_headers(method, path, body=''):
-    ts = str(int(time.time() * 1000))
-    sig = base64.b64encode(hmac.new(SECRET_KEY.encode(), (ts + method + path + body).encode(), hashlib.sha256).digest()).decode()
-    return {'ACCESS-KEY': API_KEY, 'ACCESS-SIGN': sig, 'ACCESS-TIMESTAMP': ts, 'ACCESS-PASSPHRASE': PASSPHRASE, 'Content-Type': 'application/json', 'locale': 'en-US'}
-
-def get(path, qs=''):
-    return requests.get(BASE + path + qs, headers=auth_headers('GET', path + qs)).json()
-
-def post(path, body):
-    body_str = json.dumps(body)
-    return requests.post(BASE + path, headers=auth_headers('POST', path, body_str), data=body_str).json()
-
-command = '${command}'
-args = json.loads(base64.b64decode('${argsB64}').decode('utf-8'))
-
-if command == 'ticker':
-    result = get('/capi/v2/market/ticker', '?symbol=' + args.get('symbol', 'cmt_btcusdt'))
-elif command == 'depth':
-    result = get('/capi/v2/market/depth', '?symbol=' + args.get('symbol', 'cmt_btcusdt') + '&type=step0')
-elif command == 'candles':
-    result = get('/capi/v2/market/candles', '?symbol=' + args.get('symbol') + '&granularity=1H&limit=50')
-elif command == 'funding':
-    result = get('/capi/v2/market/fundingRate', '?symbol=' + args.get('symbol', 'cmt_btcusdt'))
-elif command == 'assets':
-    result = get('/capi/v2/account/assets')
-elif command == 'positions':
-    result = get('/capi/v2/account/position/allPosition')
-elif command == 'order_history':
-    result = get('/capi/v2/order/history', '?symbol=' + args.get('symbol', 'cmt_btcusdt') + '&pageSize=20')
-elif command == 'place_order':
-    result = post('/capi/v2/order/placeOrder', {
-        'symbol': args.get('symbol'),
-        'size': args.get('size'),
-        'type': args.get('side'),
-        'order_type': '1',
-        'match_price': '1',
-        'client_oid': str(int(time.time() * 1000))
-    })
-elif command == 'upload_ai_log':
-    input_data = json.loads(args.get('input', '{}')) if isinstance(args.get('input'), str) else args.get('input', {})
-    output_data = json.loads(args.get('output', '{}')) if isinstance(args.get('output'), str) else args.get('output', {})
-    order_id = int(args.get('orderId')) if args.get('orderId') else None
-    body = {
-        'stage': args.get('stage'),
-        'model': args.get('model'),
-        'input': input_data,
-        'output': output_data,
-        'explanation': str(args.get('explanation', ''))[:1000]
-    }
-    if order_id:
-        body['orderId'] = order_id
-    result = post('/capi/v2/order/uploadAiLog', body)
-else:
-    result = {'error': 'Unknown command'}
-
-print(json.dumps(result))
-`;
-
-    return new Promise((resolve, reject) => {
-        const python = spawn('python3', ['-c', pythonScript]);
-        let stdout = '';
-        let stderr = '';
-
-        python.stdout.on('data', (data) => { stdout += data.toString(); });
-        python.stderr.on('data', (data) => { stderr += data.toString(); });
-
-        python.on('close', (code) => {
-            if (code !== 0) {
-                reject(new Error(`SDK error: ${stderr}`));
-            } else {
-                try {
-                    resolve(JSON.parse(stdout));
-                } catch {
-                    resolve(stdout);
-                }
-            }
-        });
-    });
+interface CLIResult {
+    success: boolean;
+    data?: any;
+    error?: string;
 }
 
-export class RustSDKBridge {
-    constructor() {
-        // Validate env vars
-        if (!process.env.WEEX_API_KEY) throw new Error('WEEX_API_KEY required');
-        if (!process.env.WEEX_SECRET_KEY) throw new Error('WEEX_SECRET_KEY required');
-        if (!process.env.WEEX_PASSPHRASE) throw new Error('WEEX_PASSPHRASE required');
-    }
+/**
+ * Execute Rust CLI command and return parsed JSON result
+ */
+function execRustCLI(command: string, args: string[] = []): CLIResult {
+    const env = {
+        ...process.env,
+        WEEX_API_KEY: process.env.WEEX_API_KEY,
+        WEEX_SECRET_KEY: process.env.WEEX_SECRET_KEY,
+        WEEX_PASSPHRASE: process.env.WEEX_PASSPHRASE,
+        WEEX_BASE_URL: process.env.WEEX_BASE_URL || 'https://api-contract.weex.com',
+    };
 
-    // ==================== MARKET ====================
+    const cmd = `${CLI_PATH} ${command} ${args.join(' ')}`;
 
-    async getTicker(symbol: string): Promise<any> {
-        return execRustSDK('ticker', { symbol });
-    }
-
-    async getDepth(symbol: string): Promise<any> {
-        return execRustSDK('depth', { symbol });
-    }
-
-    async getCandles(symbol: string): Promise<any> {
-        return execRustSDK('candles', { symbol });
-    }
-
-    async getFundingRate(symbol: string): Promise<any> {
-        return execRustSDK('funding', { symbol });
-    }
-
-    // ==================== ACCOUNT ====================
-
-    async getAssets(): Promise<any[]> {
-        const result = await execRustSDK('assets');
-        return Array.isArray(result) ? result : [];
-    }
-
-    async getAllPositions(): Promise<any[]> {
-        const result = await execRustSDK('positions');
-        return Array.isArray(result) ? result : [];
-    }
-
-    async getOrderHistory(symbol: string): Promise<any[]> {
-        const result = await execRustSDK('order_history', { symbol });
-        return Array.isArray(result) ? result : [];
-    }
-
-    // ==================== TRADE ====================
-
-    async placeOrder(symbol: string, size: string, side: number): Promise<any> {
-        return execRustSDK('place_order', { symbol, size, side: String(side) });
-    }
-
-    // ==================== AI LOG ====================
-
-    async uploadAILog(log: {
-        orderId?: number;
-        stage: string;
-        model: string;
-        input: Record<string, unknown>;
-        output: Record<string, unknown>;
-        explanation: string;
-    }): Promise<{ code: string; msg: string; data: string }> {
-        const result = await execRustSDK('upload_ai_log', {
-            orderId: log.orderId ? String(log.orderId) : '',
-            stage: log.stage,
-            model: log.model,
-            input: JSON.stringify(log.input),
-            output: JSON.stringify(log.output),
-            explanation: log.explanation,
+    try {
+        const output = execSync(cmd, {
+            env,
+            encoding: 'utf-8',
+            maxBuffer: 10 * 1024 * 1024, // 10MB
+            timeout: 30000, // 30s timeout
         });
-        return result as { code: string; msg: string; data: string };
+
+        return JSON.parse(output.trim());
+    } catch (error: any) {
+        // Try to parse error output
+        if (error.stdout) {
+            try {
+                return JSON.parse(error.stdout.trim());
+            } catch {
+                // Fall through
+            }
+        }
+        return { success: false, error: error.message || 'CLI execution failed' };
     }
+}
+
+export interface RustSDKBridge {
+    getTicker(symbol: string): Promise<any>;
+    getDepth(symbol: string): Promise<any>;
+    getCandles(symbol: string, granularity?: string, limit?: number): Promise<any>;
+    getFundingRate(symbol: string): Promise<any>;
+    getAssets(): Promise<any>;
+    getPositions(): Promise<any>;
+    getOrderHistory(symbol: string): Promise<any>;
+    placeOrder(symbol: string, side: 'buy' | 'sell', size: number): Promise<any>;
+    uploadAILog(log: any): Promise<any>;
 }
 
 export function createRustSDKBridge(): RustSDKBridge {
-    return new RustSDKBridge();
+    return {
+        async getTicker(symbol: string): Promise<any> {
+            const result = execRustCLI('ticker', ['--symbol', symbol]);
+            if (!result.success) throw new Error(result.error);
+            return result.data;
+        },
+
+        async getDepth(symbol: string): Promise<any> {
+            const result = execRustCLI('depth', ['--symbol', symbol]);
+            if (!result.success) throw new Error(result.error);
+            return result.data;
+        },
+
+        async getCandles(symbol: string, granularity = '1H', limit = 50): Promise<any> {
+            const result = execRustCLI('candles', [
+                '--symbol', symbol,
+                '--granularity', granularity,
+                '--limit', limit.toString()
+            ]);
+            if (!result.success) throw new Error(result.error);
+            return result.data;
+        },
+
+        async getFundingRate(symbol: string): Promise<any> {
+            const result = execRustCLI('funding', ['--symbol', symbol]);
+            if (!result.success) throw new Error(result.error);
+            return result.data;
+        },
+
+        async getAssets(): Promise<any> {
+            const result = execRustCLI('assets', []);
+            if (!result.success) throw new Error(result.error);
+            // Parse if string
+            if (typeof result.data === 'string') {
+                try {
+                    return JSON.parse(result.data);
+                } catch {
+                    return result.data;
+                }
+            }
+            return Array.isArray(result.data) ? result.data : [result.data];
+        },
+
+        async getPositions(): Promise<any> {
+            const result = execRustCLI('positions', []);
+            if (!result.success) throw new Error(result.error);
+            return result.data;
+        },
+
+        async getOrderHistory(symbol: string): Promise<any> {
+            const result = execRustCLI('order-history', ['--symbol', symbol]);
+            if (!result.success) throw new Error(result.error);
+            return result.data;
+        },
+
+        async placeOrder(symbol: string, side: 'buy' | 'sell', size: number): Promise<any> {
+            const result = execRustCLI('order', [
+                '--symbol', symbol,
+                '--side', side,
+                '--size', size.toString()
+            ]);
+            if (!result.success) throw new Error(result.error);
+            return result.data;
+        },
+
+        async uploadAILog(log: any): Promise<any> {
+            // Escape JSON for command line
+            const inputJson = JSON.stringify(log.input || {});
+            const outputJson = JSON.stringify(log.output || {});
+
+            const args = [
+                '--stage', `"${log.stage}"`,
+                '--model', `"${log.model}"`,
+                '--input', `'${inputJson}'`,
+                '--output', `'${outputJson}'`,
+                '--explanation', `"${(log.explanation || '').replace(/"/g, '\\"')}"`
+            ];
+
+            if (log.orderId) {
+                args.push('--order-id', log.orderId.toString());
+            }
+
+            const result = execRustCLI('ai-log', args);
+            return result;
+        }
+    };
 }
