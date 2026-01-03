@@ -40,7 +40,7 @@ async function main(): Promise<void> {
         .option('-s, --symbol <symbol>', 'Trading symbol', 'cmt_btcusdt')
         .option('--hft-cycles <n>', 'Number of HFT cycles', '5')
         .option('--hft-interval <s>', 'Seconds between HFT cycles', '30')
-        .option('--model <model>', 'OpenAI model', 'gpt-5.2')
+        .option('--model <model>', 'AI model', 'mimo-v2-flash')
         .option('--max-position <size>', 'Maximum position size in BTC', '0.001')
         .option('--min-balance <usd>', 'Stop trading if balance drops below this (USD)', '700')
         .parse(process.argv);
@@ -55,8 +55,8 @@ async function main(): Promise<void> {
     console.log(`💰 Max Position: ${opts.maxPosition} BTC`);
 
     // Validate environment
-    if (!process.env.OPENAI_API_KEY) {
-        console.error(chalk.red('❌ OPENAI_API_KEY not set'));
+    if (!process.env.MIMO_API_KEY && !process.env.OPENAI_API_KEY) {
+        console.error(chalk.red('❌ MIMO_API_KEY or OPENAI_API_KEY not set'));
         process.exit(1);
     }
     if (!process.env.WEEX_API_KEY) {
@@ -70,8 +70,12 @@ async function main(): Promise<void> {
     const ticker = await weexClient.getTicker(opts.symbol);
     console.log(chalk.green(`✅ Connected! ${opts.symbol} = $${ticker.last}`));
 
-    // Initialize OpenAI
-    const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+    // Initialize MiMo AI (OpenAI-compatible API)
+    // MiMo-V2-Flash is FREE until Jan 20, 2026
+    const openai = new OpenAI({
+        apiKey: process.env.MIMO_API_KEY || process.env.OPENAI_API_KEY,
+        baseURL: 'https://api.xiaomimimo.com/v1'
+    });
 
     // Initialize Enhanced Coordinator
     console.log('\n🧠 Initializing Enhanced Agent Team...');

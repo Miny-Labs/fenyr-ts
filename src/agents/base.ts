@@ -49,7 +49,7 @@ export abstract class BaseAgent {
         stage: string,
         openai: OpenAI,
         weex: RustSDKBridge,
-        model: string = 'gpt-5.2'
+        model: string = 'mimo-v2-flash'
     ) {
         this.name = name;
         this.stage = stage;
