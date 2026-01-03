@@ -39,7 +39,7 @@ export class MarketDataService extends EventEmitter {
         timestamp: 0
     };
 
-    constructor(symbol: string = 'cmt_btcusdt', url: string = 'wss://ws-contract.weex.com/contract/ws/public') {
+    constructor(symbol: string = 'cmt_btcusdt', url: string = 'wss://ws-spot.weex.com/v2/ws/public') {
         super();
         this.symbol = symbol;
         this.url = url;
@@ -95,39 +95,42 @@ export class MarketDataService extends EventEmitter {
     private subscribe(): void {
         if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
 
-        // Subscription format based on standard WEEX docs
-        // Trying standard "sub" or "op" format
+        // Spot usually uses BTCUSDT, futures uses cmt_btcusdt
+        // Try subscribing to both formats just in case
+        const spotSymbol = this.symbol.replace('cmt_', '').toUpperCase();
+
+        // Subscription format for Spot
         const subMsg = {
             op: 'subscribe',
-            args: [`market.ticker.${this.symbol}`, `market.depth.${this.symbol}.step1`]
+            args: [
+                { channel: 'ticker', instId: spotSymbol },
+                { channel: 'candle1m', instId: spotSymbol }
+            ]
         };
         this.ws.send(JSON.stringify(subMsg));
-        console.log(chalk.gray(`   [WS] Subscribed to ${this.symbol}`));
+        console.log(chalk.gray(`   [WS] Subscribed to ${spotSymbol}`));
     }
 
     private handleMessage(json: any): void {
-        // Handle Ticker Update
-        // Data format usually: { channel: "...", data: {...} } or { topic: "...", data: [...] }
+        // WEEX Spot WS format: { action: "push", arg: { channel: "ticker", instId: "BTCUSDT" }, data: [...] }
 
-        // Flexible parsing for different exchange variations
-        const data = json.data || json;
-        const topic = json.channel || json.topic || '';
+        if (json.action === 'push' && json.data) {
+            const topic = json.arg?.channel || '';
+            const data = json.data[0];
 
-        if (topic.includes('ticker')) {
-            // Update state
-            const ticker = Array.isArray(data) ? data[0] : data;
-            const price = parseFloat(ticker.last || ticker.price || ticker.lastPrice);
+            if (topic === 'ticker' || topic === 'candle1m') {
+                const price = parseFloat(data.last || data.close || data.idxPx || 0);
 
-            if (price > 0 && price !== this.state.lastPrice) {
-                this.state.lastPrice = price;
-                this.state.bid = parseFloat(ticker.bid || ticker.bestBid || 0);
-                this.state.ask = parseFloat(ticker.ask || ticker.bestAsk || 0);
-                this.state.volume24h = parseFloat(ticker.volume24h || ticker.volume || 0);
-                this.state.timestamp = Date.now();
-                this.state.symbol = this.symbol;
+                if (price > 0 && price !== this.state.lastPrice) {
+                    this.state.lastPrice = price;
+                    this.state.bid = parseFloat(data.bidPx || 0);
+                    this.state.ask = parseFloat(data.askPx || 0);
+                    this.state.volume24h = parseFloat(data.vol24h || 0);
+                    this.state.timestamp = parseInt(data.ts || Date.now());
+                    this.state.symbol = this.symbol;
 
-                // Emit lightweight tick event for HFT engine
-                this.emit('tick', price);
+                    this.emit('tick', price);
+                }
             }
         }
     }
