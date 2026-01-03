@@ -58,7 +58,7 @@ export class HFTEngineV3 extends EventEmitter {
             allowedTradingTimes: null
         }); // We don't know initial equity yet, so RiskEngine will init with 1000 default until sync
 
-        this.agents = new ParallelAgentSystem(openai, weex);
+        this.agents = new ParallelAgentSystem(openai, weex, symbol);
     }
 
     async start(): Promise<void> {

@@ -244,9 +244,12 @@ class LeadCoordinator extends EventEmitter {
     private lastDecision: LeadDecision | null = null;
     private decisionIntervalMs: number;
 
-    constructor(openai: OpenAI, model: string = 'mimo-v2-flash', decisionIntervalMs: number = 30000) {
+    private symbolShort: string;
+
+    constructor(openai: OpenAI, symbol: string, model: string = 'mimo-v2-flash', decisionIntervalMs: number = 30000) {
         super();
         this.openai = openai;
+        this.symbolShort = symbol.replace('cmt_', '').toUpperCase().replace('USDT', '');
         this.model = model;
         this.decisionIntervalMs = decisionIntervalMs;
     }
@@ -332,10 +335,10 @@ class LeadCoordinator extends EventEmitter {
                     this.lastDecision.action === 'close' ? '🟡' : '⚪';
 
             console.log(chalk.magenta(
-                `👔 [Lead] ${actionIcon} ${this.lastDecision.action.toUpperCase()} ` +
+                `👔 [Lead:${this.symbolShort}] ${actionIcon} ${this.lastDecision.action.toUpperCase()} ` +
                 `(${(this.lastDecision.confidence * 100).toFixed(0)}%) - ${elapsed}ms`
             ));
-            console.log(chalk.gray(`   Reasoning: ${this.lastDecision.reasoning.substring(0, 80)}...`));
+            console.log(chalk.gray(`   Reasoning: ${this.lastDecision.reasoning}`)); // Full reasoning
 
             // Emit decision for HFT engine
             this.emit('decision', this.lastDecision);
@@ -400,11 +403,15 @@ export class ParallelAgentSystem extends EventEmitter {
     private lead: LeadCoordinator;
     private config: TradingConfig;
 
-    constructor(openai: OpenAI, weex: RustSDKBridge, model: string = 'mimo-v2-flash') {
+    constructor(openai: OpenAI, weex: RustSDKBridge,
+        symbol: string,
+        model: string = 'mimo-v2-flash') {
         super();
         this.openai = openai;
         this.weex = weex;
         this.model = model;
+
+        const shortSymbol = symbol.replace('cmt_', '').toUpperCase().replace('USDT', '');
 
         this.config = {
             weights: { obi: 0.25, rsi: 0.25, ema: 0.25, momentum: 0.25 },
@@ -416,13 +423,13 @@ export class ParallelAgentSystem extends EventEmitter {
         };
 
         // Create lead coordinator
-        this.lead = new LeadCoordinator(openai, model, 30000); // Decision every 30s
+        this.lead = new LeadCoordinator(openai, symbol, model, 30000); // Decision every 30s
 
         // Create independent agents (each runs every 15s)
-        const marketAgent = new IndependentAgent(openai, weex, 'MarketAgent', 'market', model, 15000);
-        const sentimentAgent = new IndependentAgent(openai, weex, 'SentimentAgent', 'sentiment', model, 15000);
-        const riskAgent = new IndependentAgent(openai, weex, 'RiskAgent', 'risk', model, 15000);
-        const momentumAgent = new IndependentAgent(openai, weex, 'MomentumAgent', 'momentum', model, 15000);
+        const marketAgent = new IndependentAgent(openai, weex, `MarketAgent:${shortSymbol}`, 'market', model, 15000);
+        const sentimentAgent = new IndependentAgent(openai, weex, `SentimentAgent:${shortSymbol}`, 'sentiment', model, 15000);
+        const riskAgent = new IndependentAgent(openai, weex, `RiskAgent:${shortSymbol}`, 'risk', model, 15000);
+        const momentumAgent = new IndependentAgent(openai, weex, `MomentumAgent:${shortSymbol}`, 'momentum', model, 15000);
 
         // Add agents to lead
         this.lead.addAgent(marketAgent);

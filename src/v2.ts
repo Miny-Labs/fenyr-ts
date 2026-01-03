@@ -389,16 +389,45 @@ async function runDirectorMode(
     console.log(chalk.gray('   WS Data (0ms) -> Sync Risk -> HFT Logic (Instant) -> Execution'));
     console.log(chalk.gray('   Press Ctrl+C to stop\n'));
 
-    const engine = new HFTEngineV3(openai, weex, symbol, minBalance);
+    const engines: HFTEngineV3[] = [];
+
+    // Determine symbols to trade
+    let symbolsToTrade: string[] = [];
+    if (symbol === 'all') {
+        // Use top 3 liquid pairs to respect rate limits for now
+        // Or TRADING_PAIRS from config if we want all
+        symbolsToTrade = ['cmt_btcusdt', 'cmt_ethusdt', 'cmt_solusdt'];
+        console.log(chalk.yellow(`   Starting Multi-Pair Engines for: ${symbolsToTrade.join(', ')}`));
+    } else {
+        symbolsToTrade = [symbol];
+    }
+
+    // Launch Engines
+    for (const sym of symbolsToTrade) {
+        console.log(chalk.cyan(`   [Init] Launching HFT Engine for ${sym}...`));
+        const engine = new HFTEngineV3(openai, weex, sym, minBalance);
+        engines.push(engine);
+
+        // Start engine
+        await engine.start();
+
+        // Stagger start to avoid API burst
+        if (symbolsToTrade.length > 1) {
+            await new Promise(r => setTimeout(r, 5000));
+        }
+    }
 
     process.on('SIGINT', () => {
-        engine.stop();
-        const status = engine.getStatus();
-        console.log(chalk.cyan(`\nFinal Status: Equity=$${status.risk.equity.toFixed(2)}, RiskTripped=${status.risk.tripped}`));
+        console.log(chalk.yellow('\n\nStopping all engines...'));
+        engines.forEach(e => {
+            e.stop();
+            const status = e.getStatus();
+            console.log(chalk.cyan(`   ${e['symbol']}: Equity=$${status.risk.equity.toFixed(2)}, RiskTripped=${status.risk.tripped}`));
+        });
         process.exit(0);
     });
 
-    await engine.start();
+    // Keep running forever
     await new Promise(() => { });
 }
 
