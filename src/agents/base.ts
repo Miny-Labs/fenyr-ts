@@ -281,7 +281,7 @@ export abstract class BaseAgent {
 
         try {
             const ticker = await this.weex.getTicker(symbol);
-            const result = await this.weex.placeOrder(symbol, size, side);
+            const result = await this.weex.placeOrder(symbol, side, parseFloat(size));
 
             return {
                 executed: true,
