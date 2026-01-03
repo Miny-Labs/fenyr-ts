@@ -9,6 +9,7 @@ import OpenAI from 'openai';
 import chalk from 'chalk';
 import { createRustSDKBridge } from './sdk/rust-bridge.js';
 import { EnhancedCoordinatorAgent, TRADING_PAIRS, type TradingPair } from './agents/enhanced-coordinator.js';
+import { StreamTradingEngine } from './engine/stream-engine.js';
 
 function printBanner(): void {
     console.log(chalk.cyan(`
@@ -36,7 +37,7 @@ async function main(): Promise<void> {
         .name('fenyr-v2')
         .description('Fenyr v2.0 - Enhanced Multi-Agent Trading System')
         .version('2.0.0')
-        .option('-m, --mode <mode>', 'Trading mode: single, hft, scan, continuous', 'single')
+        .option('-m, --mode <mode>', 'Trading mode: single, hft, scan, continuous, quant', 'single')
         .option('-s, --symbol <symbol>', 'Trading symbol', 'cmt_btcusdt')
         .option('--hft-cycles <n>', 'Number of HFT cycles', '5')
         .option('--hft-interval <s>', 'Seconds between HFT cycles', '30')
@@ -115,6 +116,10 @@ async function main(): Promise<void> {
 
         case 'continuous':
             await runContinuous(coordinator, weexClient, opts.symbol, 300, parseFloat(opts.minBalance));
+            break;
+
+        case 'quant':
+            await runQuantMode(weexClient, opts.symbol, parseFloat(opts.maxPosition), parseFloat(opts.minBalance));
             break;
 
         default:
@@ -261,6 +266,44 @@ async function runContinuous(
         console.log(chalk.gray(`\n💤 Next cycle in ${intervalSec}s...`));
         await new Promise(r => setTimeout(r, intervalSec * 1000));
     }
+}
+
+async function runQuantMode(
+    weex: ReturnType<typeof createRustSDKBridge>,
+    symbol: string,
+    maxPosition: number,
+    minBalance: number
+): Promise<void> {
+    console.log(chalk.cyan('\n⚡ QUANT MODE - HIGH FREQUENCY TRADING'));
+    console.log(chalk.gray('   Pure math signals • No LLM latency • 5-second cycles'));
+    console.log(chalk.gray('   Press Ctrl+C to stop\n'));
+
+    const engine = new StreamTradingEngine(weex, {
+        symbol,
+        maxPositionSize: maxPosition,
+        minBalance,
+        pollingIntervalMs: 5000, // 5 seconds
+        minConfidence: 0.5, // Lower threshold for faster action
+        signalThreshold: 0.2,
+        riskPerTrade: 0.02, // 2% risk per trade
+    });
+
+    // Handle graceful shutdown
+    process.on('SIGINT', () => {
+        console.log(chalk.yellow('\n\nShutting down gracefully...'));
+        engine.stop();
+        const status = engine.getStatus();
+        console.log(chalk.cyan(`\n📊 Session Summary:`));
+        console.log(`   Trades: ${status.tradeCount}`);
+        console.log(`   Win Rate: ${(status.winRate * 100).toFixed(1)}%`);
+        console.log(`   Final Equity: $${status.equity.toFixed(2)}`);
+        process.exit(0);
+    });
+
+    await engine.start();
+
+    // Keep running forever
+    await new Promise(() => { });
 }
 
 main().catch(console.error);
