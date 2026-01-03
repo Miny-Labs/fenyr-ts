@@ -10,6 +10,7 @@ import chalk from 'chalk';
 import { createRustSDKBridge } from './sdk/rust-bridge.js';
 import { EnhancedCoordinatorAgent, TRADING_PAIRS, type TradingPair } from './agents/enhanced-coordinator.js';
 import { StreamTradingEngine } from './engine/stream-engine.js';
+import { HybridTradingEngine } from './engine/hybrid-engine.js';
 
 function printBanner(): void {
     console.log(chalk.cyan(`
@@ -37,7 +38,7 @@ async function main(): Promise<void> {
         .name('fenyr-v2')
         .description('Fenyr v2.0 - Enhanced Multi-Agent Trading System')
         .version('2.0.0')
-        .option('-m, --mode <mode>', 'Trading mode: single, hft, scan, continuous, quant', 'single')
+        .option('-m, --mode <mode>', 'Mode: single, continuous, quant, hybrid', 'hybrid')
         .option('-s, --symbol <symbol>', 'Trading symbol', 'cmt_btcusdt')
         .option('--hft-cycles <n>', 'Number of HFT cycles', '5')
         .option('--hft-interval <s>', 'Seconds between HFT cycles', '30')
@@ -120,6 +121,10 @@ async function main(): Promise<void> {
 
         case 'quant':
             await runQuantMode(weexClient, opts.symbol, parseFloat(opts.maxPosition), parseFloat(opts.minBalance));
+            break;
+
+        case 'hybrid':
+            await runHybridMode(openai, weexClient, opts.model, opts.symbol, parseFloat(opts.minBalance));
             break;
 
         default:
@@ -301,6 +306,33 @@ async function runQuantMode(
     });
 
     await engine.start();
+
+    // Keep running forever
+    await new Promise(() => { });
+}
+
+async function runHybridMode(
+    openai: OpenAI,
+    weex: ReturnType<typeof createRustSDKBridge>,
+    model: string,
+    symbol: string,
+    minBalance: number
+): Promise<void> {
+    console.log(chalk.cyan('\n🏢 HYBRID MODE - AI STRATEGISTS + HFT ALGORITHMS'));
+    console.log(chalk.gray('   AI runs every 60s to configure | HFT runs every 5s to execute'));
+    console.log(chalk.gray('   Press Ctrl+C to stop\n'));
+
+    const engine = new HybridTradingEngine(openai, weex, model, symbol, minBalance);
+
+    // Handle graceful shutdown
+    process.on('SIGINT', () => {
+        console.log(chalk.yellow('\n\nShutting down hybrid system...'));
+        engine.stop();
+        process.exit(0);
+    });
+
+    // Start with AI every 60s, HFT every 5s
+    await engine.start(5000, 60000);
 
     // Keep running forever
     await new Promise(() => { });
