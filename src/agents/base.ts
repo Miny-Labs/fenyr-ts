@@ -243,7 +243,7 @@ export abstract class BaseAgent {
 
     protected async getAccountStatus(): Promise<Record<string, unknown>> {
         const assets = await this.weex.getAssets();
-        const positions = await this.weex.getAllPositions();
+        const positions = await this.weex.getPositions();
 
         const usdtAsset = (assets as any[]).find((a) => a.coinName === 'USDT') || {};
         const activePositions = (positions as any[]).filter((p) => parseFloat(p.total) > 0);
