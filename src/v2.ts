@@ -12,6 +12,7 @@ import { EnhancedCoordinatorAgent, TRADING_PAIRS, type TradingPair } from './age
 import { StreamTradingEngine } from './engine/stream-engine.js';
 import { HybridTradingEngine } from './engine/hybrid-engine.js';
 import { FullParallelEngine } from './engine/full-parallel.js';
+import { HFTEngineV3 } from './engine/hft-engine-v3.js';
 
 function printBanner(): void {
     console.log(chalk.cyan(`
@@ -39,7 +40,7 @@ async function main(): Promise<void> {
         .name('fenyr-v2')
         .description('Fenyr v2.0 - Enhanced Multi-Agent Trading System')
         .version('2.0.0')
-        .option('-m, --mode <mode>', 'Mode: single, continuous, quant, hybrid, parallel', 'parallel')
+        .option('-m, --mode <mode>', 'Mode: single, continuous, quant, hybrid, parallel, director', 'director')
         .option('-s, --symbol <symbol>', 'Trading symbol', 'cmt_btcusdt')
         .option('--hft-cycles <n>', 'Number of HFT cycles', '5')
         .option('--hft-interval <s>', 'Seconds between HFT cycles', '30')
@@ -130,6 +131,10 @@ async function main(): Promise<void> {
 
         case 'parallel':
             await runParallelMode(openai, weexClient, opts.model, opts.symbol, parseFloat(opts.minBalance));
+            break;
+
+        case 'director':
+            await runDirectorMode(openai, weexClient, opts.symbol, parseFloat(opts.minBalance));
             break;
 
         default:
@@ -371,6 +376,29 @@ async function runParallelMode(
     await engine.start(5000); // HFT every 5s
 
     // Keep running forever
+    await new Promise(() => { });
+}
+
+async function runDirectorMode(
+    openai: OpenAI,
+    weex: ReturnType<typeof createRustSDKBridge>,
+    symbol: string,
+    minBalance: number
+): Promise<void> {
+    console.log(chalk.cyan('\n🚀 DIRECTOR MODE - REAL HFT ARCHITECTURE'));
+    console.log(chalk.gray('   WS Data (0ms) -> Sync Risk -> HFT Logic (Instant) -> Execution'));
+    console.log(chalk.gray('   Press Ctrl+C to stop\n'));
+
+    const engine = new HFTEngineV3(openai, weex, symbol, minBalance);
+
+    process.on('SIGINT', () => {
+        engine.stop();
+        const status = engine.getStatus();
+        console.log(chalk.cyan(`\nFinal Status: Equity=$${status.risk.equity.toFixed(2)}, RiskTripped=${status.risk.tripped}`));
+        process.exit(0);
+    });
+
+    await engine.start();
     await new Promise(() => { });
 }
 
