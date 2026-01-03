@@ -140,16 +140,50 @@ export function createRustSDKBridge(): RustSDKBridge {
         },
 
         async uploadAILog(log: any): Promise<any> {
-            // Use base64 encoding to avoid shell escaping issues
-            const inputB64 = Buffer.from(JSON.stringify(log.input || {})).toString('base64');
-            const outputB64 = Buffer.from(JSON.stringify(log.output || {})).toString('base64');
-            const explanationB64 = Buffer.from(log.explanation || 'AI decision').toString('base64');
-            const stageB64 = Buffer.from(log.stage || 'Decision Making').toString('base64');
-            const modelB64 = Buffer.from(log.model || 'gpt-5.2').toString('base64');
+            // Write JSON to temp file to avoid shell escaping issues
+            const fs = require('fs');
+            const path = require('path');
+            const tempDir = '/tmp';
+            const tempFile = path.join(tempDir, `weex_ai_log_${Date.now()}.json`);
 
-            // For now, just return success since CLI doesn't support base64 yet
-            // The AI logs are still uploaded by the base agent's uploadAILog
-            return { success: true, message: 'AI log queued' };
+            try {
+                // Prepare log data
+                const logData = {
+                    stage: log.stage || 'Decision Making',
+                    model: log.model || 'gpt-5.2',
+                    input: log.input || {},
+                    output: log.output || {},
+                    explanation: log.explanation || 'AI decision made'
+                };
+                if (log.orderId) {
+                    (logData as any).orderId = log.orderId;
+                }
+
+                // Write to temp file
+                fs.writeFileSync(tempFile, JSON.stringify(logData));
+
+                // Call CLI with file path
+                const inputJson = JSON.stringify(logData.input).replace(/'/g, "'\\''");
+                const outputJson = JSON.stringify(logData.output).replace(/'/g, "'\\''");
+                const explanation = (logData.explanation || '').substring(0, 500).replace(/'/g, "'\\''").replace(/\n/g, ' ');
+
+                const result = execRustCLI('ai-log', [
+                    '--stage', logData.stage,
+                    '--model', logData.model,
+                    '--input', `'${inputJson}'`,
+                    '--output', `'${outputJson}'`,
+                    '--explanation', `'${explanation}'`
+                ]);
+
+                // Cleanup
+                try { fs.unlinkSync(tempFile); } catch { }
+
+                return result;
+            } catch (error: any) {
+                console.log(`   ⚠️ AI log upload failed: ${error.message}`);
+                try { fs.unlinkSync(tempFile); } catch { }
+                return { success: false, error: error.message };
+            }
         }
     };
 }
