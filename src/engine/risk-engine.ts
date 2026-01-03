@@ -8,7 +8,8 @@
 import chalk from 'chalk';
 
 export interface RiskConfig {
-    maxDailyLoss: number;      // Max USD loss per day (e.g. $50)
+    maxDailyLoss: number;      // Max USD loss per day (e.g. $50) -- DEPRECATED in favor of minEquity? Keep both.
+    minEquity: number;         // Hard stoploss floor (e.g. 700)
     maxDrawdown: number;       // Max drawdown from peak equity (e.g. 5%)
     maxPositionSize: number;   // Max BTC size absolute (e.g. 0.05 BTC)
     maxOpenOrders: number;     // Max number of open orders (safety)
@@ -77,6 +78,12 @@ export class RiskEngine {
         // 3. Daily Loss Limit
         if (this.state.dailyPnL < -this.config.maxDailyLoss) {
             this.tripCircuitBreaker('Daily Loss Limit Hit');
+            return false;
+        }
+
+        // 3.5 Hard Equity Floor (Stoploss)
+        if (this.state.equity < this.config.minEquity) {
+            this.tripCircuitBreaker(`Hard Stoploss Limit ($${this.config.minEquity})`);
             return false;
         }
 

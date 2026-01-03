@@ -41,7 +41,7 @@ export class HFTEngineV3 extends EventEmitter {
         openai: OpenAI,
         weex: RustSDKBridge,
         symbol: string = 'cmt_btcusdt',
-        initialEquity: number = 1000
+        minBalance: number = 700
     ) {
         super();
         this.symbol = symbol;
@@ -50,12 +50,14 @@ export class HFTEngineV3 extends EventEmitter {
         // 1. Initialize Components
         this.ws = new MarketDataService(symbol);
         this.risk = new RiskEngine({
-            maxDailyLoss: 50,
-            maxDrawdown: 0.05,
+            maxDailyLoss: 200, // Allow $200 swing before stop
+            minEquity: minBalance, // HARD STOP at this level (e.g. 700)
+            maxDrawdown: 0.15, // 15% drawdown allowed (aggressive)
             maxPositionSize: 0.05,
             maxOpenOrders: 3,
             allowedTradingTimes: null
-        }, initialEquity);
+        }); // We don't know initial equity yet, so RiskEngine will init with 1000 default until sync
+
         this.agents = new ParallelAgentSystem(openai, weex);
     }
 
