@@ -140,48 +140,34 @@ export function createRustSDKBridge(): RustSDKBridge {
         },
 
         async uploadAILog(log: any): Promise<any> {
-            // Write JSON to temp file to avoid shell escaping issues
-            const fs = require('fs');
-            const path = require('path');
-            const tempDir = '/tmp';
-            const tempFile = path.join(tempDir, `weex_ai_log_${Date.now()}.json`);
-
             try {
-                // Prepare log data
-                const logData = {
-                    stage: log.stage || 'Decision Making',
-                    model: log.model || 'gpt-5.2',
-                    input: log.input || {},
-                    output: log.output || {},
-                    explanation: log.explanation || 'AI decision made'
-                };
-                if (log.orderId) {
-                    (logData as any).orderId = log.orderId;
-                }
+                // Simplify to avoid shell escaping - only pass simple strings
+                const stage = (log.stage || 'Decision Making').replace(/['"]/g, '');
+                const model = (log.model || 'gpt-5.2').replace(/['"]/g, '');
 
-                // Write to temp file
-                fs.writeFileSync(tempFile, JSON.stringify(logData));
+                // Flatten input/output to simple key-value for shell safety
+                const signal = log.output?.signal || 'neutral';
+                const confidence = log.output?.confidence || 0;
+                const agentName = log.output?.agent || 'unknown';
 
-                // Call CLI with file path
-                const inputJson = JSON.stringify(logData.input).replace(/'/g, "'\\''");
-                const outputJson = JSON.stringify(logData.output).replace(/'/g, "'\\''");
-                const explanation = (logData.explanation || '').substring(0, 500).replace(/'/g, "'\\''").replace(/\n/g, ' ');
+                // Create minimal safe explanation
+                const explanation = (log.explanation || 'AI decision')
+                    .substring(0, 200)
+                    .replace(/['"\\]/g, '')
+                    .replace(/\n/g, ' ')
+                    .replace(/[()]/g, '');
 
                 const result = execRustCLI('ai-log', [
-                    '--stage', logData.stage,
-                    '--model', logData.model,
-                    '--input', `'${inputJson}'`,
-                    '--output', `'${outputJson}'`,
-                    '--explanation', `'${explanation}'`
+                    '--stage', stage,
+                    '--model', model,
+                    '--input', `{"signal":"${signal}","confidence":${confidence}}`,
+                    '--output', `{"agent":"${agentName}","signal":"${signal}"}`,
+                    '--explanation', explanation
                 ]);
-
-                // Cleanup
-                try { fs.unlinkSync(tempFile); } catch { }
 
                 return result;
             } catch (error: any) {
-                console.log(`   ⚠️ AI log upload failed: ${error.message}`);
-                try { fs.unlinkSync(tempFile); } catch { }
+                // Silently fail - AI logs are optional
                 return { success: false, error: error.message };
             }
         }
