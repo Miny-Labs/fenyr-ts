@@ -74,11 +74,26 @@ async function main(): Promise<void> {
     const ticker = await weexClient.getTicker(opts.symbol);
     console.log(chalk.green(`✅ Connected! ${opts.symbol} = $${ticker.last}`));
 
-    // Initialize MiMo AI (OpenAI-compatible API)
-    // MiMo-V2-Flash is FREE until Jan 20, 2026
+    // Initialize LLM Client (MiMo or Together AI)
+    const apiKey = process.env.GROQ_API_KEY || process.env.TOGETHER_API_KEY || process.env.MIMO_API_KEY || process.env.OPENAI_API_KEY;
+    const baseURL = process.env.GROQ_API_KEY ? 'https://api.groq.com/openai/v1' :
+        (process.env.TOGETHER_API_KEY ? 'https://api.together.xyz/v1' :
+            (process.env.MIMO_API_KEY ? 'https://api.xiaomimimo.com/v1' : 'https://api.openai.com/v1'));
+
+    if (process.env.GROQ_API_KEY) {
+        console.log(chalk.green('✅ Using Groq API (High Speed/Reasoning)'));
+    } else if (process.env.TOGETHER_API_KEY) {
+        console.log(chalk.green('✅ Using Together AI (Kimi-K2-Thinking)'));
+    }
+
+    if (!apiKey) {
+        console.error(chalk.red('❌ No API Key found (GROQ_API_KEY, TOGETHER_API_KEY, MIMO_API_KEY, or OPENAI_API_KEY)'));
+        process.exit(1);
+    }
+
     const openai = new OpenAI({
-        apiKey: process.env.MIMO_API_KEY || process.env.OPENAI_API_KEY,
-        baseURL: 'https://api.xiaomimimo.com/v1'
+        apiKey: apiKey,
+        baseURL: baseURL
     });
 
     // Initialize Enhanced Coordinator
@@ -394,10 +409,9 @@ async function runDirectorMode(
     // Determine symbols to trade
     let symbolsToTrade: string[] = [];
     if (symbol === 'all') {
-        // Use top 3 liquid pairs to respect rate limits for now
-        // Or TRADING_PAIRS from config if we want all
-        symbolsToTrade = ['cmt_btcusdt', 'cmt_ethusdt', 'cmt_solusdt'];
-        console.log(chalk.yellow(`   Starting Multi-Pair Engines for: ${symbolsToTrade.join(', ')}`));
+        // Use all 8 competition pairs
+        symbolsToTrade = [...TRADING_PAIRS];
+        console.log(chalk.yellow(`   Starting Multi-Pair Engines (Competition Set): ${symbolsToTrade.join(', ')}`));
     } else {
         symbolsToTrade = [symbol];
     }
@@ -413,7 +427,7 @@ async function runDirectorMode(
 
         // Stagger start to avoid API burst
         if (symbolsToTrade.length > 1) {
-            await new Promise(r => setTimeout(r, 5000));
+            await new Promise(r => setTimeout(r, 10000)); // 10s stagger to avoid rate limits
         }
     }
 

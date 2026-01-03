@@ -13,7 +13,7 @@ import { EventEmitter } from 'events';
 import OpenAI from 'openai';
 import chalk from 'chalk';
 import { RustSDKBridge } from '../sdk/rust-bridge.js';
-import { calculateRSI, calculateEMA, calculateOBI, calculateATR } from '../quant/indicators.js';
+import { calculateRSI, calculateEMA, calculateOBI, calculateATR, calculateMACD, calculateBollingerBands } from '../quant/indicators.js';
 
 // ==================== AGENT REPORT TYPES ====================
 
@@ -54,6 +54,7 @@ class IndependentAgent extends EventEmitter {
     private model: string;
     private name: string;
     private role: string;
+    private symbol: string; // ACTUAL TRADING SYMBOL
     private intervalMs: number;
     private isRunning: boolean = false;
     private interval: NodeJS.Timeout | null = null;
@@ -64,14 +65,16 @@ class IndependentAgent extends EventEmitter {
         weex: RustSDKBridge,
         name: string,
         role: string,
+        symbol: string, // NOW REQUIRED
         model: string = 'mimo-v2-flash',
-        intervalMs: number = 15000
+        intervalMs: number = 10000 // Faster: 10s instead of 15s
     ) {
         super();
         this.openai = openai;
         this.weex = weex;
         this.name = name;
         this.role = role;
+        this.symbol = symbol; // STORE THE ACTUAL SYMBOL
         this.model = model;
         this.intervalMs = intervalMs;
     }
@@ -140,50 +143,85 @@ class IndependentAgent extends EventEmitter {
     }
 
     private async gatherData(): Promise<Record<string, any>> {
-        // Base data all agents get
-        const ticker = await this.weex.getTicker('cmt_btcusdt');
+        // USE THE CORRECT SYMBOL FOR THIS AGENT
+        const ticker = await this.weex.getTicker(this.symbol);
         const currentPrice = parseFloat(ticker.last || ticker.lastPr);
 
         const baseData = {
-            symbol: 'cmt_btcusdt',
+            symbol: this.symbol,
             currentPrice,
             priceChange24h: parseFloat(ticker.priceChangePercent || 0),
             volume24h: parseFloat(ticker.volume_24h || ticker.baseVolume || 0),
             timestamp: new Date().toISOString(),
         };
 
-        // Role-specific data
+        // 2 POWER AGENTS - each combines multiple data sources
         switch (this.role) {
-            case 'market':
-                const depth = await this.weex.getDepth('cmt_btcusdt');
-                const bids = (depth.bids || []).slice(0, 10);
-                const asks = (depth.asks || []).slice(0, 10);
-                return { ...baseData, topBids: bids, topAsks: asks, spread: asks[0]?.[0] - bids[0]?.[0] };
+            case 'technical':
+                // TECHNICAL AGENT: RSI, EMA, MACD, Bollinger, ATR
+                const candles = await this.weex.getCandles(this.symbol);
+                let closes: number[] = [];
+                let highs: number[] = [];
+                let lows: number[] = [];
+                if (Array.isArray(candles)) {
+                    closes = candles.map((c: any) => parseFloat(Array.isArray(c) ? c[4] : c.close)).filter(v => v > 0);
+                    highs = candles.map((c: any) => parseFloat(Array.isArray(c) ? c[2] : c.high)).filter(v => v > 0);
+                    lows = candles.map((c: any) => parseFloat(Array.isArray(c) ? c[3] : c.low)).filter(v => v > 0);
+                }
+                const rsi = closes.length >= 15 ? calculateRSI(closes, 14) : 50;
+                const ema9 = closes.length >= 9 ? calculateEMA(closes, 9) : currentPrice;
+                const ema21 = closes.length >= 21 ? calculateEMA(closes, 21) : currentPrice;
+                const macd = calculateMACD(closes);
+                const bollinger = calculateBollingerBands(closes, 20, 2);
+                const atr = calculateATR(highs, lows, closes, 14);
+                return {
+                    ...baseData,
+                    rsi,
+                    rsiSignal: rsi < 30 ? 'OVERSOLD_BUY' : rsi > 70 ? 'OVERBOUGHT_SELL' : 'NEUTRAL',
+                    ema9,
+                    ema21,
+                    emaCross: ema9 > ema21 ? 'BULLISH_CROSS' : 'BEARISH_CROSS',
+                    macdHistogram: macd.histogram,
+                    macdSignal: macd.histogram > 0 ? 'BULLISH' : 'BEARISH',
+                    bollingerUpper: bollinger.upper,
+                    bollingerLower: bollinger.lower,
+                    priceVsBollinger: currentPrice > bollinger.upper ? 'OVERBOUGHT' : currentPrice < bollinger.lower ? 'OVERSOLD' : 'NEUTRAL',
+                    atr,
+                    volatilityLevel: atr / currentPrice > 0.02 ? 'HIGH' : 'NORMAL'
+                };
 
-            case 'sentiment':
-                const funding = await this.weex.getFundingRate('cmt_btcusdt').catch(() => ({ fundingRate: 0 }));
-                return { ...baseData, fundingRate: parseFloat(funding.fundingRate || 0) };
+            case 'structure':
+                // STRUCTURE AGENT: Order Book, Funding, Positions, Depth
+                const depth = await this.weex.getDepth(this.symbol);
+                const rawBids = (depth.bids || []).slice(0, 10);
+                const rawAsks = (depth.asks || []).slice(0, 10);
+                const bidQty = rawBids.reduce((sum: number, b: any) => sum + parseFloat(b[1] || 0), 0);
+                const askQty = rawAsks.reduce((sum: number, a: any) => sum + parseFloat(a[1] || 0), 0);
+                const obi = (bidQty + askQty) > 0 ? (bidQty - askQty) / (bidQty + askQty) : 0;
+                const spread = rawAsks[0]?.[0] - rawBids[0]?.[0];
 
-            case 'risk':
+                const funding = await this.weex.getFundingRate(this.symbol).catch(() => ({ fundingRate: 0 }));
+                const fundingRate = parseFloat(funding.fundingRate || 0);
+
                 const positions = await this.weex.getPositions();
                 const assets = await this.weex.getAssets();
                 const usdt = assets.find((a: any) => a.coinName === 'USDT');
+                const equity = parseFloat(usdt?.equity || usdt?.available || 0);
+                const activePositions = positions.filter((p: any) => parseFloat(p.total || 0) > 0);
+                const hasPosition = activePositions.some((p: any) => p.symbol?.includes(this.symbol.replace('cmt_', '')));
+
                 return {
                     ...baseData,
-                    equity: parseFloat(usdt?.equity || usdt?.available || 0),
-                    positions: positions.filter((p: any) => parseFloat(p.total || 0) > 0),
+                    obi,
+                    obiSignal: obi > 0.15 ? 'BUY_PRESSURE' : obi < -0.15 ? 'SELL_PRESSURE' : 'BALANCED',
+                    spread,
+                    fundingRate,
+                    fundingSignal: fundingRate > 0.0001 ? 'SHORTS_FAVORED' : fundingRate < -0.0001 ? 'LONGS_FAVORED' : 'NEUTRAL',
+                    equity,
+                    hasPosition,
+                    positionCount: activePositions.length,
+                    canTrade: equity > 100 && activePositions.length < 5
                 };
-
-            case 'momentum':
-                const candles = await this.weex.getCandles('cmt_btcusdt');
-                let closes: number[] = [];
-                if (Array.isArray(candles)) {
-                    closes = candles.map((c: any) => parseFloat(Array.isArray(c) ? c[4] : c.close)).filter(v => v > 0);
-                }
-                const rsi = closes.length >= 15 ? calculateRSI(closes, 14) : 50;
-                const ema20 = closes.length >= 20 ? calculateEMA(closes, 20) : currentPrice;
-                const ema50 = closes.length >= 50 ? calculateEMA(closes, 50) : currentPrice;
-                return { ...baseData, rsi, ema20, ema50, trend: ema20 > ema50 ? 'bullish' : 'bearish' };
 
             default:
                 return baseData;
@@ -201,9 +239,10 @@ class IndependentAgent extends EventEmitter {
                     { role: 'user', content: `Analyze this data and provide your report:\n${JSON.stringify(data, null, 2)}` }
                 ],
                 temperature: 0.3,
-                max_tokens: 300,
+                max_tokens: 1024, // Increased for reasoning
                 response_format: { type: 'json_object' },
-            });
+                ...((this.model.includes('gpt-oss') || this.model.includes('Reasoning')) ? { reasoning_effort: 'high' } : {})
+            } as any);
 
             const content = response.choices[0]?.message?.content || '{}';
             return JSON.parse(content);
@@ -213,22 +252,41 @@ class IndependentAgent extends EventEmitter {
     }
 
     private getSystemPrompt(): string {
-        const basePrompt = `You are ${this.name}, an AI trading agent. Respond with ONLY valid JSON in this exact format:
-{
-    "signal": "bullish" | "bearish" | "neutral",
-    "confidence": number between 0 and 1,
-    "reasoning": "brief 1-sentence explanation",
-    "data": { any relevant metrics }
-}`;
-
         const rolePrompts: Record<string, string> = {
-            market: `${basePrompt}\n\nYour expertise: Order book analysis, spread, liquidity. Look at bid/ask imbalance.`,
-            sentiment: `${basePrompt}\n\nYour expertise: Funding rates, market sentiment. Positive funding = longs pay shorts (bearish signal).`,
-            risk: `${basePrompt}\n\nYour expertise: Position sizing, account health. Consider equity and exposure.`,
-            momentum: `${basePrompt}\n\nYour expertise: Technical analysis, RSI, EMA trends. RSI<30=oversold, RSI>70=overbought.`,
+            technical: `You are a TECHNICAL ANALYSIS expert for HFT trading. You analyze:
+- RSI (Relative Strength Index): <30 = OVERSOLD (BUY), >70 = OVERBOUGHT (SELL)
+- EMA Crossover: EMA9 > EMA21 = BULLISH, EMA9 < EMA21 = BEARISH
+- MACD Histogram: Positive = BULLISH momentum, Negative = BEARISH momentum
+- Bollinger Bands: Price > Upper = OVERBOUGHT, Price < Lower = OVERSOLD
+- ATR: High volatility = wider stops, Low volatility = tighter stops
+
+TRADING RULES:
+1. If RSI is OVERSOLD + MACD turning positive = STRONG BUY (bullish, 85%+)
+2. If RSI is OVERBOUGHT + MACD turning negative = STRONG SELL (bearish, 85%+)
+3. If EMA cross aligns with MACD = MEDIUM signal (70%)
+4. Conflicting signals = NEUTRAL (50%)
+
+Respond with ONLY valid JSON:
+{"signal": "bullish" | "bearish" | "neutral", "confidence": 0.0-1.0, "reasoning": "brief explanation"}`,
+
+            structure: `You are a MARKET STRUCTURE expert for HFT trading. You analyze:
+- Order Book Imbalance (OBI): >0.15 = BUY pressure, <-0.15 = SELL pressure
+- Funding Rate: Positive = longs pay shorts (go short), Negative = shorts pay longs (go long)
+- Position Count: Too many positions = reduce risk
+- Equity Level: Must have sufficient margin
+
+TRADING RULES:
+1. If OBI shows BUY_PRESSURE + Funding is LONGS_FAVORED = STRONG BUY (bullish, 85%+)
+2. If OBI shows SELL_PRESSURE + Funding is SHORTS_FAVORED = STRONG SELL (bearish, 85%+)
+3. If signals align but weaker = MEDIUM signal (70%)
+4. If canTrade is false = NEUTRAL regardless of other signals
+5. Mixed signals = NEUTRAL (50%)
+
+Respond with ONLY valid JSON:
+{"signal": "bullish" | "bearish" | "neutral", "confidence": 0.0-1.0, "reasoning": "brief explanation"}`
         };
 
-        return rolePrompts[this.role] || basePrompt;
+        return rolePrompts[this.role] || 'Analyze the data and respond with JSON: {"signal": "bullish"|"bearish"|"neutral", "confidence": 0.0-1.0, "reasoning": "explanation"}';
     }
 }
 
@@ -273,19 +331,18 @@ class LeadCoordinator extends EventEmitter {
         console.log(chalk.gray(`   Decision interval: ${this.decisionIntervalMs / 1000}s`));
         console.log(chalk.gray(`   Managing ${this.agents.length} agents`));
 
-        // Start all agents
-        await Promise.all(this.agents.map(a => a.start()));
+        // Start all agents (non-blocking)
+        this.agents.forEach(a => a.start().catch(() => { }));
 
-        // Wait for first reports
-        await new Promise(r => setTimeout(r, 5000));
-
-        // Make first decision
-        await this.makeDecision();
+        // Schedule first decision after agents warm up (non-blocking)
+        setTimeout(async () => {
+            await this.makeDecision().catch(() => { });
+        }, 10000); // 10s warmup before first decision
 
         // Then decide periodically
         this.decisionInterval = setInterval(async () => {
             if (this.isRunning) {
-                await this.makeDecision();
+                await this.makeDecision().catch(() => { });
             }
         }, this.decisionIntervalMs);
     }
@@ -307,7 +364,7 @@ class LeadCoordinator extends EventEmitter {
 
         try {
             const startTime = Date.now();
-            console.log(chalk.magenta(`\n👔 [Lead] Making decision with ${this.latestReports.size} agent reports...`));
+            console.log(chalk.magenta(`\n👔 [Lead:${this.symbolShort}] Making decision with ${this.latestReports.size} agent reports...`));
 
             // Collect all reports
             const reports: Record<string, AgentReport> = {};
@@ -362,12 +419,14 @@ Respond with ONLY valid JSON in this exact format:
     "reasoning": "1-2 sentence explanation of your decision"
 }
 
-Decision guidelines:
-- If majority of agents agree: follow their consensus
-- If agents disagree: prefer "hold" unless one has very high confidence
-- Consider risk agent's assessment of account health
-- In uncertain conditions: smaller position size, wider stops
-- Only "long" or "short" if confidence > 0.6`;
+Decision guidelines (AGGRESSIVE HFT MODE):
+- PREFER ACTION over caution - this is HFT, not buy-and-hold
+- If even 2 agents agree on direction: TAKE THE TRADE  
+- Strong single signal (>70% confidence) from any agent: ACT on it
+- Only "hold" if ALL agents are truly neutral (50-55%)
+- Risk agent approval is helpful but NOT required for small positions
+- Use larger position sizes (0.02-0.04) when signals align
+- "long" or "short" if ANY agent shows confidence > 0.55`;
 
         // Summarize reports for prompt
         const reportSummary = Object.entries(reports).map(([name, r]) =>
@@ -400,16 +459,19 @@ export class ParallelAgentSystem extends EventEmitter {
     private openai: OpenAI;
     private weex: RustSDKBridge;
     private model: string;
-    private lead: LeadCoordinator;
+    public lead: LeadCoordinator;
     private config: TradingConfig;
+    private intervalMs: number;
 
     constructor(openai: OpenAI, weex: RustSDKBridge,
         symbol: string,
-        model: string = 'mimo-v2-flash') {
+        model: string = 'mimo-v2-flash',
+        intervalMs: number = 20000) {
         super();
         this.openai = openai;
         this.weex = weex;
         this.model = model;
+        this.intervalMs = intervalMs;
 
         const shortSymbol = symbol.replace('cmt_', '').toUpperCase().replace('USDT', '');
 
@@ -425,17 +487,13 @@ export class ParallelAgentSystem extends EventEmitter {
         // Create lead coordinator
         this.lead = new LeadCoordinator(openai, symbol, model, 30000); // Decision every 30s
 
-        // Create independent agents (each runs every 15s)
-        const marketAgent = new IndependentAgent(openai, weex, `MarketAgent:${shortSymbol}`, 'market', model, 15000);
-        const sentimentAgent = new IndependentAgent(openai, weex, `SentimentAgent:${shortSymbol}`, 'sentiment', model, 15000);
-        const riskAgent = new IndependentAgent(openai, weex, `RiskAgent:${shortSymbol}`, 'risk', model, 15000);
-        const momentumAgent = new IndependentAgent(openai, weex, `MomentumAgent:${shortSymbol}`, 'momentum', model, 15000);
+        // 2 POWER AGENTS (instead of 4) - each combines multiple data sources
+        const technicalAgent = new IndependentAgent(openai, weex, `TechAgent:${shortSymbol}`, 'technical', symbol, model, this.intervalMs);
+        const structureAgent = new IndependentAgent(openai, weex, `StructAgent:${shortSymbol}`, 'structure', symbol, model, this.intervalMs);
 
         // Add agents to lead
-        this.lead.addAgent(marketAgent);
-        this.lead.addAgent(sentimentAgent);
-        this.lead.addAgent(riskAgent);
-        this.lead.addAgent(momentumAgent);
+        this.lead.addAgent(technicalAgent);
+        this.lead.addAgent(structureAgent);
 
         // When lead makes decision, update config for HFT engine
         this.lead.on('decision', (decision: LeadDecision) => {
@@ -457,7 +515,7 @@ export class ParallelAgentSystem extends EventEmitter {
         console.log(chalk.cyan('\n' + '═'.repeat(60)));
         console.log(chalk.cyan('🤖 PARALLEL AGENT SYSTEM'));
         console.log(chalk.cyan('   4 Independent Agents + 1 Lead Coordinator'));
-        console.log(chalk.cyan('   Using MiMo: 100 RPM, Unlimited TPM'));
+        console.log(chalk.cyan(`   Model: ${this.model}`));
         console.log(chalk.cyan('═'.repeat(60)));
 
         await this.lead.start();

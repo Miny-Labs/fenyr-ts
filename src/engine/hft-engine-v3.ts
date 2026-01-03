@@ -56,9 +56,12 @@ export class HFTEngineV3 extends EventEmitter {
             maxPositionSize: 0.05,
             maxOpenOrders: 3,
             allowedTradingTimes: null
-        }); // We don't know initial equity yet, so RiskEngine will init with 1000 default until sync
+        });
 
-        this.agents = new ParallelAgentSystem(openai, weex, symbol);
+        // High Speed Config: 5s interval for Kimi-K2 (9.5s latency means ~15s total cycle)
+        // We use 'moonshotai/Kimi-K2-Thinking' or 'meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo'
+        // Defaulting to Kimi-K2 as requested, with 5000ms polling
+        this.agents = new ParallelAgentSystem(openai, weex, symbol, 'openai/gpt-oss-120b', 5000);
     }
 
     async start(): Promise<void> {
@@ -80,6 +83,27 @@ export class HFTEngineV3 extends EventEmitter {
         this.ws.on('tick', (price: number) => this.onTick(price));
         this.ws.on('connected', () => console.log(chalk.green('   [Link] Market Data Stream Active 🟢')));
 
+        // EXECUTION TRIGGER: Event-driven execution on Lead decision
+        this.agents.lead.on('decision', async (decision: any) => { // Listen to lead directly
+            if (!this.isRunning) return;
+            console.log(chalk.magenta(`   [Event] Lead Decision Received: ${decision.action.toUpperCase()} (${(decision.confidence * 100).toFixed(0)}%)`));
+
+            // Use current price from WS state or fallback to REST if WS is dead
+            let currentPrice = this.ws.state.lastPrice;
+            if (!currentPrice || currentPrice <= 0) {
+                try {
+                    const ticker = await this.weex.getTicker(this.symbol);
+                    currentPrice = parseFloat(ticker.last || ticker.lastPr);
+                } catch (e) {
+                    currentPrice = 0;
+                }
+            }
+
+            if (currentPrice > 0) {
+                await this.evaluateAndExecute(decision, currentPrice);
+            }
+        });
+
         // Initial Position Check (Persistence/Recovery)
         await this.syncPosition();
     }
@@ -92,18 +116,9 @@ export class HFTEngineV3 extends EventEmitter {
     }
 
     /**
-     * THE HOT PATH - Called on every price tick (potentially 10-20 times/sec)
-     * Must be extremely fast. No API calls allowed here except execution.
+     * SHARED EXECUTION LOGIC - Called by both WS Ticks and Agent Events
      */
-    private async onTick(price: number): Promise<void> {
-        if (!this.isRunning) return;
-
-        // 1. Update Local History (Memory)
-        this.priceHistory.push(price);
-        if (this.priceHistory.length > 100) this.priceHistory.shift();
-
-        // 2. Get Strategic Guidance (Async -> Sync Read)
-        const decision = this.agents.getLastDecision();
+    private async evaluateAndExecute(decision: any, price: number): Promise<void> {
         const config = this.agents.getConfig();
 
         // 3. Dead Man's Switch (Confidence Decay)
@@ -113,8 +128,7 @@ export class HFTEngineV3 extends EventEmitter {
         if (decision) {
             const ageSeconds = (Date.now() - decision.timestamp) / 1000;
             if (ageSeconds > this.decaySeconds) {
-                // Confidence decays to 0 over 2x decay window
-                console.log(chalk.red(`   ⚠️ STALE DECISION (${ageSeconds.toFixed(1)}s old) - Ignoring`));
+                if (Math.random() < 0.1) console.log(chalk.red(`   ⚠️ STALE DECISION (${ageSeconds.toFixed(1)}s old) - Ignoring`));
                 effectiveConfidence = 0;
             } else {
                 effectiveConfidence = decision.confidence;
@@ -123,13 +137,20 @@ export class HFTEngineV3 extends EventEmitter {
         }
 
         // 4. Calculate Alpha (Local HFT Logic) - Combined with AI
-        // We re-calculate RSI locally locally for 0ms latency confirmation
         const localRSI = this.priceHistory.length > 14 ? calculateRSI(this.priceHistory, 14) : 50;
 
         // HFT Logic: Confirm AI with local math
         let hftConfirm = false;
-        if (action === 'long' && localRSI < 70) hftConfirm = true;
-        if (action === 'short' && localRSI > 30) hftConfirm = true;
+
+        // RELAXED CONFIRMATION: If AI is very confident (>70%), we trust it more
+        if (effectiveConfidence > 0.7) {
+            hftConfirm = true;
+        } else {
+            // Otherwise requires technical confirmation
+            if (action === 'long' && localRSI < 70) hftConfirm = true;
+            if (action === 'short' && localRSI > 30) hftConfirm = true;
+        }
+
         // Close signals are always honored
         if (action === 'close') hftConfirm = true;
 
@@ -139,8 +160,16 @@ export class HFTEngineV3 extends EventEmitter {
             // Cooldown check (simple)
             if (Date.now() - this.lastExecutionTime < 5000) return; // 5s cooldown
 
+            // Fire-and-forget AI Log Upload
+            this.weex.uploadAILog({
+                stage: 'HFT Execution',
+                model: 'gpt-oss-120b',
+                output: { signal: action, confidence: effectiveConfidence, agent: 'LeadCoordinator' },
+                explanation: decision?.reasoning || 'Automated HFT Execution'
+            }).catch(e => console.error(chalk.red(`   [Log] Upload Failed: ${e.message}`)));
+
             if (action === 'long' && (!this.currentPosition || this.currentPosition.side === 'short')) {
-                await this.executeOrder('buy', config.riskPerTrade * 10000, price, 'AI_LONG'); // Scaled size
+                await this.executeOrder('buy', config.riskPerTrade * 10000, price, 'AI_LONG');
             } else if (action === 'short' && (!this.currentPosition || this.currentPosition.side === 'long')) {
                 await this.executeOrder('sell', config.riskPerTrade * 10000, price, 'AI_SHORT');
             } else if (action === 'close' && this.currentPosition) {
@@ -150,9 +179,22 @@ export class HFTEngineV3 extends EventEmitter {
         }
 
         // Log Heartbeat (Throttle logging)
-        if (Math.random() < 0.05) { // Log ~5% of ticks to avoid spam
+        if (Math.random() < 0.05) {
             this.printStatus(price, action, effectiveConfidence, localRSI);
         }
+    }
+
+    private async onTick(price: number): Promise<void> {
+        if (!this.isRunning) return;
+
+        // 1. Update Local History (Memory)
+        this.priceHistory.push(price);
+        if (this.priceHistory.length > 100) this.priceHistory.shift();
+
+        // 2. Get Strategic Guidance & Execute
+        // Note: This is redundant if Event listener is working, but serves as a backup/heartbeat
+        const decision = this.agents.getLastDecision();
+        await this.evaluateAndExecute(decision, price);
     }
 
     private async executeOrder(side: 'buy' | 'sell', size: number, price: number, reason: string): Promise<void> {
@@ -164,11 +206,6 @@ export class HFTEngineV3 extends EventEmitter {
         console.log(chalk.yellow(`\n⚡ EXECUTE ${side.toUpperCase()} ${size} @ $${price} (${reason})`));
 
         try {
-            // Execution (Process Spawn - The only necessary evil)
-            // Map side to 1/2/3/4 for our CLI
-            // 1=open_long, 2=close_short (buy)
-            // 3=open_short, 4=close_long (sell)
-
             let weexSide = 0;
             if (side === 'buy') {
                 weexSide = this.currentPosition?.side === 'short' ? 2 : 1;
@@ -197,7 +234,10 @@ export class HFTEngineV3 extends EventEmitter {
     private async syncPosition(): Promise<void> {
         try {
             const positions = await this.weex.getPositions();
-            const pos = positions.find((p: any) => p.symbol?.toLowerCase().includes('btc') && parseFloat(p.total) > 0);
+            // Match symbol more generically (e.g. cmt_btcusdt includes btc)
+            const cleanSym = this.symbol.replace('cmt_', '').replace('usdt', '').toUpperCase(); // BTC
+            const pos = positions.find((p: any) => p.symbol && p.symbol.includes(cleanSym) && parseFloat(p.total) > 0);
+
             if (pos) {
                 this.currentPosition = {
                     side: pos.holdSide === 'long' ? 'long' : 'short',
