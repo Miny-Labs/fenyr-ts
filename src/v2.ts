@@ -11,6 +11,7 @@ import { createRustSDKBridge } from './sdk/rust-bridge.js';
 import { EnhancedCoordinatorAgent, TRADING_PAIRS, type TradingPair } from './agents/enhanced-coordinator.js';
 import { StreamTradingEngine } from './engine/stream-engine.js';
 import { HybridTradingEngine } from './engine/hybrid-engine.js';
+import { FullParallelEngine } from './engine/full-parallel.js';
 
 function printBanner(): void {
     console.log(chalk.cyan(`
@@ -38,7 +39,7 @@ async function main(): Promise<void> {
         .name('fenyr-v2')
         .description('Fenyr v2.0 - Enhanced Multi-Agent Trading System')
         .version('2.0.0')
-        .option('-m, --mode <mode>', 'Mode: single, continuous, quant, hybrid', 'hybrid')
+        .option('-m, --mode <mode>', 'Mode: single, continuous, quant, hybrid, parallel', 'parallel')
         .option('-s, --symbol <symbol>', 'Trading symbol', 'cmt_btcusdt')
         .option('--hft-cycles <n>', 'Number of HFT cycles', '5')
         .option('--hft-interval <s>', 'Seconds between HFT cycles', '30')
@@ -125,6 +126,10 @@ async function main(): Promise<void> {
 
         case 'hybrid':
             await runHybridMode(openai, weexClient, opts.model, opts.symbol, parseFloat(opts.minBalance));
+            break;
+
+        case 'parallel':
+            await runParallelMode(openai, weexClient, opts.model, opts.symbol, parseFloat(opts.minBalance));
             break;
 
         default:
@@ -333,6 +338,37 @@ async function runHybridMode(
 
     // Start with AI every 60s, HFT every 5s
     await engine.start(5000, 60000);
+
+    // Keep running forever
+    await new Promise(() => { });
+}
+
+async function runParallelMode(
+    openai: OpenAI,
+    weex: ReturnType<typeof createRustSDKBridge>,
+    model: string,
+    symbol: string,
+    minBalance: number
+): Promise<void> {
+    console.log(chalk.cyan('\n🏛️ PARALLEL MODE - Full Multi-Agent System'));
+    console.log(chalk.gray('   4 AI Agents (15s) → Lead Coordinator (30s) → HFT (5s)'));
+    console.log(chalk.gray('   MiMo: 100 RPM • Unlimited TPM • JSON Output'));
+    console.log(chalk.gray('   Press Ctrl+C to stop\n'));
+
+    const engine = new FullParallelEngine(openai, weex, model, symbol, minBalance);
+
+    // Handle graceful shutdown
+    process.on('SIGINT', () => {
+        console.log(chalk.yellow('\n\nShutting down parallel system...'));
+        engine.stop();
+        const status = engine.getStatus();
+        console.log(chalk.cyan(`\n📊 Session Summary:`));
+        console.log(`   Final Equity: $${status.equity.toFixed(2)}`);
+        console.log(`   Position: ${status.position ? `${status.position.side} ${status.position.size}` : 'FLAT'}`);
+        process.exit(0);
+    });
+
+    await engine.start(5000); // HFT every 5s
 
     // Keep running forever
     await new Promise(() => { });
